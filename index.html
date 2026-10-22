@@ -7566,11 +7566,17 @@ async function adWipePlatform(){
   var log=function(t){ if(logEl) logEl.textContent += t+'\n'; console.log('[sıfırla] '+t); };
   if(btn) btn.disabled=true; if(logEl) logEl.textContent='';
   var meId=String(_currentStaff.id);
+  var _fails=[];
   async function delRefs(refs, label){
-    for(var i=0;i<refs.length;i+=400){
-      var b=db.batch(); refs.slice(i,i+400).forEach(function(r){ b.delete(r); }); await b.commit();
-    }
-    log('✓ '+label+': '+refs.length+' kayıt silindi');
+    try{
+      for(var i=0;i<refs.length;i+=400){
+        var b=db.batch(); refs.slice(i,i+400).forEach(function(r){ b.delete(r); }); await b.commit();
+      }
+      log('✓ '+label+': '+refs.length+' kayıt silindi');
+    }catch(e){ _fails.push(label); log('✗ '+label+' SİLİNEMEDİ: '+(e&&e.message||e)); }
+  }
+  async function step(label, fn){
+    try{ await fn(); log('✓ '+label); }catch(e){ _fails.push(label); log('✗ '+label+' YAPILAMADI: '+(e&&e.message||e)); }
   }
   try{
     // ── 1) YEDEK
@@ -7597,11 +7603,9 @@ async function adWipePlatform(){
     await new Promise(function(r){ setTimeout(r, 1500); });
     // ── 2) SİLME
     await delRefs(us.docs.map(function(d){ return d.ref; }), 'Müşteri hesap verileri');
-    await db.collection('broker').doc('accounts').set({data:'[]', count:0, updatedAt:new Date().toISOString()});
-    log('✓ Hesap listesi boşaltıldı');
-    await db.collection('broker').doc('requests').set({withdraw:'[]', deposit:'[]', updatedAt:new Date().toISOString()});
-    log('✓ Yatırım/çekim talepleri silindi');
-    await db.collection('broker').doc('receipts').delete().catch(function(){});
+    await step('Hesap listesi boşaltıldı', function(){ return db.collection('broker').doc('accounts').set({data:'[]', count:0, updatedAt:new Date().toISOString()}); });
+    await step('Yatırım/çekim talepleri silindi', function(){ return db.collection('broker').doc('requests').set({withdraw:'[]', deposit:'[]', updatedAt:new Date().toISOString()}); });
+    await step('Dekont listesi silindi', function(){ return db.collection('broker').doc('receipts').delete(); });
     await delRefs(rc.map(function(d){ return d.ref; }), 'Dekont dosya kayıtları');
     await delRefs(stDel.map(function(d){ return d.ref; }), 'Personel (senin hesabın korundu)');
     await delRefs(bu.docs.map(function(d){ return d.ref; }), 'Otomatik hesap yedekleri');
@@ -7619,6 +7623,12 @@ async function adWipePlatform(){
     // ── 3) Bu tarayıcının önbelleği
     try{ ['tx_accounts','tx_wreqs','tx_dreqs','tx_staff','tx_fullbackup'].forEach(function(k){ localStorage.removeItem(k); }); }catch(e){}
     accounts=[]; withdrawRequests=[]; depositRequests=[];
+    if(_fails.length){
+      log('\nBİTTİ — ANCAK '+_fails.length+' adım yapılamadı: '+_fails.join(', ')+'.\nBu genelde Firebase güvenlik kuralının silmeye izin vermemesinden olur. Bu ekranın görüntüsünü gönder.');
+      showAdminToast('Kısmen tamamlandı', _fails.length+' adım yapılamadı', 'error');
+      if(btn) btn.disabled=false;
+      return;
+    }
     log('\nTAMAMLANDI. Sayfa 4 saniye içinde yenilenecek.');
     showAdminToast('Sıfırlandı','Müşteri verileri temizlendi','success');
     setTimeout(function(){ location.reload(); }, 4000);
