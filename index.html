@@ -1422,7 +1422,10 @@ function _fbSaveAccountsCommit() {
       if(!db){ _lsLoad() || callback([]); return; }
       db.collection('broker').doc('accounts').get()
         .then(function(doc){
-          if(doc.exists){try{var d=JSON.parse(doc.data().data||'[]');if(d.length){if(typeof _txFilterDeletedAccs==='function') d=_txFilterDeletedAccs(d);callback(_stripCanonFields(d));return;}}catch(e){}}
+          if(doc.exists){try{var d=JSON.parse(doc.data().data||'[]');if(d.length){if(typeof _txFilterDeletedAccs==='function') d=_txFilterDeletedAccs(d);callback(_stripCanonFields(d));return;}
+            // 2026-10-22: Liste BİLEREK boşaltıldıysa (platform sıfırlama) saatlik yedeklerden geri yükleme YAPMA —
+            // eskiden boş liste görünce son 24 saatin yedeğini açıyor, silinen hesaplar geri çıkıyordu.
+            if(doc.data().wipedAt || doc.data().count===0){ callback([]); return; }}catch(e){}}
           var hours=[];for(var i=0;i<24;i++){var dt=new Date(Date.now()-i*3600000);hours.push(dt.toISOString().substring(0,13).replace('T','_'));}
           var tryH=function(idx){if(idx>=hours.length){ _lsLoad() || callback([]); return;}
             db.collection('broker').doc('accounts_backup_'+hours[idx]).get().then(function(d2){if(d2.exists){try{var dd=JSON.parse(d2.data().data||'[]');if(dd.length){// Tombstone: silinmiş hesapları backup'tan da temizle
@@ -7587,6 +7590,13 @@ async function adWipePlatform(){
     for(var k of ['accounts','requests','receipts']){ var d0=await db.collection('broker').doc(k).get(); bk.broker[k]=d0.exists?d0.data():null; }
     var bc=await db.collection('broker').get();
     var rc=bc.docs.filter(function(d){ return d.id.indexOf('rcpt_')===0; });
+    var abk=bc.docs.filter(function(d){ return d.id.indexOf('accounts_backup_')===0; });
+    bk.accountBackups=abk.map(function(d){ return {id:d.id, data:d.data()}; });
+    // Silinecek tüm hesap numaraları (yeniden dirilmesinler diye kalıcı "silindi" listesine eklenecek)
+    var _wipedIds={};
+    bk.users.forEach(function(u){ _wipedIds[String(u.id)]=1; });
+    try{ JSON.parse((bk.broker.accounts&&bk.broker.accounts.data)||'[]').forEach(function(x){ if(x&&x.id) _wipedIds[String(x.id)]=1; }); }catch(e){}
+    abk.forEach(function(d){ try{ JSON.parse(d.data().data||'[]').forEach(function(x){ if(x&&x.id) _wipedIds[String(x.id)]=1; }); }catch(e){} });
     bk.receiptFiles=rc.map(function(d){ return {id:d.id, data:d.data()}; });
     var st=await db.collection('staff').get();
     var stDel=st.docs.filter(function(d){ return d.id!==meId; });
@@ -7603,7 +7613,14 @@ async function adWipePlatform(){
     await new Promise(function(r){ setTimeout(r, 1500); });
     // ── 2) SİLME
     await delRefs(us.docs.map(function(d){ return d.ref; }), 'Müşteri hesap verileri');
-    await step('Hesap listesi boşaltıldı', function(){ return db.collection('broker').doc('accounts').set({data:'[]', count:0, updatedAt:new Date().toISOString()}); });
+    await step('Hesap listesi boşaltıldı', function(){ return db.collection('broker').doc('accounts').set({data:'[]', count:0, wipedAt:new Date().toISOString(), updatedAt:new Date().toISOString()}); });
+    await delRefs(abk.map(function(d){ return d.ref; }), 'Saatlik hesap yedekleri');
+    await step('Silinen hesap numaraları kilitlendi ('+Object.keys(_wipedIds).length+' adet — açık kalmış eski bir sekme geri yazamaz)', function(){
+      var ids=Object.keys(_wipedIds);
+      ids.forEach(function(id){ if(_txDeletedAccs.indexOf(id)===-1) _txDeletedAccs.push(id); });
+      try{ localStorage.setItem('tx_deleted_accs', JSON.stringify(_txDeletedAccs)); }catch(e){}
+      return db.collection('broker').doc('config').set({ deletedAccIds:_txDeletedAccs, _ts:Date.now() }, {merge:true});
+    });
     await step('Yatırım/çekim talepleri silindi', function(){ return db.collection('broker').doc('requests').set({withdraw:'[]', deposit:'[]', updatedAt:new Date().toISOString()}); });
     await step('Dekont listesi silindi', function(){ return db.collection('broker').doc('receipts').delete(); });
     await delRefs(rc.map(function(d){ return d.ref; }), 'Dekont dosya kayıtları');
